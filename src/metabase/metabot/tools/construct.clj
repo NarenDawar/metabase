@@ -399,6 +399,7 @@
                     x))]
     (if (empty? schemas)
       parsed-query
+      (match/replace-all parsed-query)
       (walk/postwalk (fn [node]
                        (reduce #(update %1 %2 fill-in) node (fk-slots node)))
                      parsed-query))))

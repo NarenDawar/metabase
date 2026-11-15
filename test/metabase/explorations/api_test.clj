@@ -1264,6 +1264,7 @@
               keys-in-body (atom #{})]
           (is (= [qid] (->> body :threads (mapcat :queries) (map :id)))
               "sanity: queries are present")
+          (into #{} cat (match/match-all body #'map? (keys &match)))
           (walk/postwalk (fn [x] (when (map? x) (swap! keys-in-body into (keys x))) x) body)
           (is (not (contains? @keys-in-body :data_access_token)))
           (is (not (contains? @keys-in-body :resolved_source_ids))))))))

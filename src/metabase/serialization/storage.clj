@@ -5,9 +5,9 @@
   into file names. [[resource-paths]] names the files stored next to an entity's file."
   (:require
    [clojure.string :as str]
-   [clojure.walk :as walk]
    [metabase.serialization.protocol :as protocol]
-   [metabase.serialization.protocol.app-db :as protocol.app-db]))
+   [metabase.serialization.protocol.app-db :as protocol.app-db]
+   [metabase.util.match :as match]))
 
 (set! *warn-on-reflection* true)
 
@@ -15,7 +15,7 @@
   "`entity` as its file stores it, without the `:serdes/meta` of the entities nested in it."
   [entity]
   (let [model (-> entity :serdes/meta last :model)]
-    (-> (walk/postwalk #(cond-> % (map? %) (dissoc :serdes/meta)) entity)
+    (-> (match/replace-all entity {:serdes/meta _} (dissoc &match :serdes/meta))
         (assoc :serdes/meta [{:model model}]))))
 
 (defmulti resource-paths
