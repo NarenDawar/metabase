@@ -2,6 +2,7 @@
   "`/api/ee/remote-sync` endpoints."
   (:require
    [metabase-enterprise.remote-sync.content :as content]
+   [metabase-enterprise.remote-sync.db :as remote-sync.db]
    [metabase-enterprise.remote-sync.merge :as remote-sync.merge]
    [metabase-enterprise.remote-sync.models.remote-sync-task :as remote-sync.task]
    [metabase-enterprise.remote-sync.protocol :as protocol]
@@ -12,6 +13,7 @@
    [metabase.api.common :as api]
    [metabase.api.macros :as api.macros]
    [metabase.api.routes.common :refer [+auth]]
+   [metabase.app-db.core :as mdb]
    [metabase.events.core :as events]
    [metabase.remote-sync.core :as remote-sync]
    [metabase.serialization.core :as serialization]
@@ -334,6 +336,100 @@
                                           (protocol/create-branch! repo new-branch base)
                                           (sync/push! repo new-branch base {:message message :report report})))))]
       {:status "success" :message (tru "Pushing changes to {0}" new-branch) :task_id (:id task)})))
+
+(defn- check-worktrees-supported
+  "Throws a 400 unless the app DB keeps worktrees apart: Postgres, with a role that row-level security applies to."
+  []
+  (api/check-400 (remote-sync.settings/remote-sync-worktrees-enabled)
+                 (tru "Worktrees need a PostgreSQL application database."))
+  (api/check-400 (not (remote-sync.db/row-level-security-bypassed?))
+                 (tru "Worktrees need an application database user that row-level security applies to, not a superuser or a user with BYPASSRLS.")))
+
+(defn- present-user
+  "`user` as a worktree lists them."
+  [user]
+  (some-> user (select-keys [:id :email :first_name :last_name :common_name])))
+
+(defn- present-worktrees
+  "`worktrees` with the user who created each and the subdomain of the site URL each opens at."
+  [worktrees]
+  (for [worktree (t2/hydrate worktrees :creator)]
+    (-> worktree
+        (update :creator present-user)
+        (assoc :subdomain (mdb/subdomain (:branch worktree))))))
+
+(defn- check-subdomain-free
+  "Throws a 400 unless a worktree checking out `branch` gets a subdomain of its own."
+  [branch]
+  (let [subdomain (mdb/subdomain branch)]
+    (api/check-400 (seq subdomain) (tru "The branch {0} has no letters or digits to name its worktree''s subdomain." branch))
+    (when-let [other (some #(when (= subdomain (mdb/subdomain (:branch %))) (:branch %)) (remote-sync.db/worktrees))]
+      (throw (ex-info (tru "The worktree for the branch {0} already opens at the subdomain {1}." other subdomain)
+                      {:status-code 400})))))
+
+(api.macros/defendpoint :get "/worktree" :- [:sequential ::remote-sync.schema/worktree]
+  "The worktrees, with the user who created each and the subdomain each opens at."
+  []
+  (api/check-superuser)
+  (vec (present-worktrees (remote-sync.db/worktrees))))
+
+(api.macros/defendpoint :get "/worktree/:id" :- ::remote-sync.schema/worktree
+  "The worktree with `id`, with the user who created it and the subdomain it opens at."
+  [{:keys [id]} :- [:map {:closed true} [:id ms/PositiveInt]]]
+  (api/check-superuser)
+  (first (present-worktrees [(api/check-404 (remote-sync.db/worktree id))])))
+
+(api.macros/defendpoint :post "/worktree" :- ::remote-sync.schema/worktree
+  "Create a worktree checking out `branch`, a branch of the repository, empty until someone working in it pulls."
+  [_route
+   _query
+   {:keys [branch]} :- [:map {:closed true}
+                        [:branch ms/NonBlankString]]]
+  (api/check-superuser)
+  (check-configured!)
+  (check-read-write!)
+  (check-worktrees-supported)
+  (check-subdomain-free branch)
+  (let [repo (remote-sync.settings/repository)]
+    (protocol/fetch! repo)
+    (api/check-400 (protocol/version repo branch) (tru "The branch {0} doesn''t exist in the repository." branch))
+    (first (present-worktrees [(remote-sync.db/insert-worktree! {:branch     branch
+                                                                 :creator_id api/*current-user-id*})]))))
+
+(api.macros/defendpoint :delete "/worktree/:id" :- ::api/generic-204-no-content
+  "Delete the worktree with `id` and its content."
+  [{:keys [id]} :- [:map {:closed true} [:id ms/PositiveInt]]]
+  (api/check-superuser)
+  (api/check-404 (remote-sync.db/worktree id))
+  (remote-sync.db/delete-worktree! id)
+  api/generic-204-no-content)
+
+(api.macros/defendpoint :post "/create-branch" :- [:map {:closed true}
+                                                   [:status [:= "success"]]
+                                                   [:message :string]]
+  "Create the branch `name` in the repository at the tip of the main app's branch, whichever worktree the request works
+  in."
+  [_route
+   _query
+   {branch-name :name} :- [:map {:closed true} [:name ms/NonBlankString]]]
+  (api/check-superuser)
+  (check-configured!)
+  (let [repo        (remote-sync.settings/repository)
+        _           (protocol/fetch! repo)
+        base-branch (setting/get-value-of-type :string :remote-sync-branch)
+        base        (api/check-400 (protocol/version repo base-branch) (tru "Base commit not found"))]
+    (api/check-400 (nil? (protocol/version repo branch-name))
+                   (tru "The branch {0} already exists in the repository." branch-name))
+    (try
+      (protocol/create-branch! repo branch-name base)
+      (events/publish-event! :event/remote-sync-create-branch
+                             {:details {:branch_name branch-name
+                                        :base_branch base-branch}
+                              :user-id api/*current-user-id*})
+      {:status  "success"
+       :message (tru "Branch ''{0}'' created from ''{1}''" branch-name base-branch)}
+      (catch Exception e
+        (throw (ex-info (tasks/error-message e) {:status-code 400} e))))))
 
 (def ^{:arglists '([request respond raise])} routes
   "`/api/ee/remote-sync` routes."

@@ -160,3 +160,11 @@
   (t2/query-one {:update (t2/table-name :model/Session)
                  :set    {:last_active_at :%now}
                  :where  [:= :key_hashed key-hashed]}))
+
+(mu/defn subdomain-worktree-id :- [:maybe pos-int?]
+  "The id of the remote sync worktree that opens at `subdomain`, or nil."
+  [subdomain :- :string]
+  (some (fn [{:keys [id branch]}]
+          (when (= subdomain (mdb/subdomain branch))
+            id))
+        (t2/select [:model/RemoteSyncWorktree :id :branch] {:order-by [[:id :asc]]})))

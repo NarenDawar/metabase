@@ -8,4 +8,6 @@
 
 (methodical/defmethod t2/table-name :model/RemoteSyncWorktree [_model] :remote_sync_worktree)
 
-(derive :model/RemoteSyncWorktree :metabase/model)
+(doto :model/RemoteSyncWorktree
+  (derive :metabase/model)
+  (derive :hook/timestamped?))
