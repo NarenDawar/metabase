@@ -1,9 +1,22 @@
 import userEvent from "@testing-library/user-event";
 
+import { createMockMetadata } from "__support__/metadata";
 import { setupDatabaseEndpoints } from "__support__/server-mocks";
-import { act, renderWithProviders, screen, within } from "__support__/ui";
+import {
+  act,
+  renderWithProviders,
+  screen,
+  waitFor,
+  within,
+} from "__support__/ui";
 import * as Lib from "metabase-lib";
-import { DEFAULT_TEST_QUERY, SAMPLE_PROVIDER } from "metabase-lib/test-helpers";
+import {
+  DEFAULT_TEST_QUERY,
+  SAMPLE_PROVIDER,
+  createMetadataProvider,
+} from "metabase-lib/test-helpers";
+import type { Database } from "metabase-types/api";
+import { COMMON_DATABASE_FEATURES } from "metabase-types/api/mocks";
 import {
   ORDERS_ID,
   createSampleDatabase,
@@ -15,10 +28,12 @@ import { ExpressionStep } from "./ExpressionStep";
 
 interface SetupOpts {
   query?: Lib.Query;
+  database?: Database;
 }
 
 function setup({
   query = Lib.createTestQuery(SAMPLE_PROVIDER, DEFAULT_TEST_QUERY),
+  database = createSampleDatabase(),
 }: SetupOpts = {}) {
   const updateQuery = jest.fn();
 
@@ -33,7 +48,7 @@ function setup({
     return recentQuery;
   }
 
-  setupDatabaseEndpoints(createSampleDatabase());
+  setupDatabaseEndpoints(database);
 
   renderWithProviders(
     <ExpressionStep
@@ -170,5 +185,97 @@ describe("Notebook Editor > Expression Step", () => {
     expect(Lib.displayInfo(recentQuery, 0, expressions[0]).displayName).toBe(
       "Total (1)",
     );
+  });
+
+  describe("closing the editor after a shortcut (metabase#63180)", () => {
+    // the email extractions need regex lookaheads and lookbehinds, which the
+    // H2 sample database supports
+    const database = createSampleDatabase({
+      features: [
+        ...COMMON_DATABASE_FEATURES,
+        "regex",
+        "regex/lookaheads-and-lookbehinds",
+      ],
+    });
+    const provider = createMetadataProvider({
+      databaseId: database.id,
+      metadata: createMockMetadata({ databases: [database] }),
+    });
+
+    function createQueryWithExpression() {
+      return Lib.createTestQuery(provider, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            expressions: [
+              {
+                name: "Foo",
+                value: {
+                  type: "operator",
+                  operator: "+",
+                  args: [
+                    { type: "literal", value: 1 },
+                    { type: "literal", value: 2 },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    async function expectClickOutsideToKeepEditor() {
+      await userEvent.click(document.body);
+      expect(screen.getByTestId("expression-editor")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Keep editing your custom expression?"),
+      ).not.toBeInTheDocument();
+    }
+
+    async function expectClickOutsideAfterClearingToCloseEditor() {
+      await userEvent.clear(
+        screen.getByTestId("custom-expression-query-editor"),
+      );
+      await userEvent.click(document.body);
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("expression-editor"),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByText("Keep editing your custom expression?"),
+      ).not.toBeInTheDocument();
+    }
+
+    it("should keep the editor open after combining columns until the expression is cleared", async () => {
+      setup({ query: createQueryWithExpression(), database });
+
+      await userEvent.click(screen.getByRole("img", { name: "add icon" }));
+      await userEvent.click(await screen.findByText("Combine columns"));
+      await userEvent.click(screen.getByRole("button", { name: "Done" }));
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toHaveValue('concat([Created At], " ", [Discount])');
+
+      await expectClickOutsideToKeepEditor();
+      await expectClickOutsideAfterClearingToCloseEditor();
+    });
+
+    it("should keep the editor open after extracting a column until the expression is cleared", async () => {
+      setup({ query: createQueryWithExpression(), database });
+
+      await userEvent.click(screen.getByRole("img", { name: "add icon" }));
+      await userEvent.click(await screen.findByText("Extract columns"));
+      await userEvent.click(await screen.findByText("User"));
+      await userEvent.click(await screen.findByText("Email"));
+      await userEvent.click(await screen.findByText("Domain"));
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toHaveValue("domain([User → Email])");
+
+      await expectClickOutsideToKeepEditor();
+      await expectClickOutsideAfterClearingToCloseEditor();
+    });
   });
 });
