@@ -17,6 +17,7 @@ import {
 } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import { act, fireEvent } from "@testing-library/react";
+import fetchMock from "fetch-mock";
 
 import { setupDatabaseEndpoints } from "__support__/server-mocks";
 import { renderWithProviders, screen, waitFor } from "__support__/ui";
@@ -117,6 +118,11 @@ export async function setup({
   await waitFor(() =>
     expect(getEditorContent()).toHaveAttribute("contenteditable", "true"),
   );
+  // Suggestions, help text and validation depend on the database features, so
+  // let the database load before the test types anything.
+  await act(async () => {
+    await fetchMock.callHistory.flush(true);
+  });
   await act(async () => getEditorView().focus());
 
   return { onChangeClause, onClose };
