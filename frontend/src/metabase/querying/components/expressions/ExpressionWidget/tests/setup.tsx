@@ -20,6 +20,7 @@ import { act, fireEvent } from "@testing-library/react";
 
 import { setupDatabaseEndpoints } from "__support__/server-mocks";
 import { renderWithProviders, screen, waitFor, within } from "__support__/ui";
+import { waitForRequestsToSettle } from "__support__/utils";
 import { checkNotNull } from "metabase/utils/types";
 import * as Lib from "metabase-lib";
 import { SAMPLE_PROVIDER } from "metabase-lib/test-helpers";
@@ -117,6 +118,8 @@ export async function setup({
   await waitFor(() =>
     expect(getEditorContent()).toHaveAttribute("contenteditable", "true"),
   );
+  // the editor offers and validates functions by the database features
+  await waitForRequestsToSettle();
   await act(async () => getEditorView().focus());
 
   return { onChangeClause, onClose };
