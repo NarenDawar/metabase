@@ -117,6 +117,16 @@ export function dataStudioActions(params: ExpandedIdsParams = {}) {
   return `${ROOT_URL}/actions${getExpandedIdsQueryString(params)}`;
 }
 
+export function dataStudioWorktrees() {
+  return `${ROOT_URL}/worktrees`;
+}
+
+export function worktree(siteUrl: string, subdomain: string) {
+  const url = new URL(siteUrl);
+  url.hostname = `${subdomain}.${url.hostname}`;
+  return url.href;
+}
+
 export function dataStudioTable(tableId: TableId) {
   return `${dataStudioLibrary()}/tables/${tableId}`;
 }
